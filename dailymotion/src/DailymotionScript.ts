@@ -1,0 +1,1313 @@
+let config: Config;
+let _settings: IDailymotionPluginSettings;
+
+const state = {
+  anonymousUserAuthorizationToken: '',
+  anonymousUserAuthorizationTokenExpirationDate: 0,
+  commentWebServiceToken: '',
+  channelsCache: {} as Record<string, PlatformChannel>,
+  maintenanceMode: false
+};
+
+import {
+  BASE_URL,
+  SEARCH_CAPABILITIES,
+  BASE_URL_PLAYLIST,
+  BASE_URL_API,
+  BASE_URL_METADATA,
+  ERROR_TYPES,
+  LikedMediaSort,
+  PLATFORM,
+  BASE_URL_COMMENTS,
+  BASE_URL_COMMENTS_AUTH,
+  BASE_URL_COMMENTS_THUMBNAILS,
+  FAVORITE_VIDEOS_PLAYLIST_ID,
+  LIKED_VIDEOS_PLAYLIST_ID,
+  RECENTLY_WATCHED_VIDEOS_PLAYLIST_ID,
+  REGEX_VIDEO_CHANNEL_URL,
+  REGEX_VIDEO_PLAYLIST_URL,
+  REGEX_VIDEO_URL,
+  REGEX_VIDEO_URL_1,
+  REGEX_VIDEO_URL_EMBED,
+  PRIVATE_PLAYLIST_QUERY_PARAM_FLAGGER,
+  FALLBACK_SPOT_ID,
+} from './constants';
+
+import {
+  AUTOCOMPLETE_QUERY,
+  CHANNEL_QUERY_DESKTOP,
+  PLAYLIST_DETAILS_QUERY,
+  GET_USER_SUBSCRIPTIONS,
+  SEARCH_QUERY,
+  SEACH_DISCOVERY_QUERY,
+  CHANNEL_VIDEOS_QUERY,
+  WATCHING_VIDEO,
+  SEARCH_CHANNEL,
+  CHANNEL_PLAYLISTS_QUERY,
+  SUBSCRIPTIONS_QUERY,
+  GET_CHANNEL_PLAYLISTS_XID,
+  USER_LIKED_VIDEOS_QUERY,
+  USER_WATCHED_VIDEOS_QUERY,
+  USER_WATCH_LATER_VIDEOS_QUERY,
+  DISCOVERY_QUEUE_QUERY,
+  playerVideosDataQuery,
+} from './gqlQueries';
+
+import {
+  getChannelNameFromUrl,
+  getQuery,
+  generateUUIDv4,
+  applyCommonHeaders,
+  notifyMaintenanceMode
+} from './util';
+
+import {
+  Channel,
+  Collection,
+  CollectionConnection,
+  Live,
+  LiveConnection,
+  LiveEdge,
+  Maybe,
+  SuggestionConnection,
+  User,
+  Video,
+  VideoConnection,
+  VideoEdge,
+} from '../types/CodeGenDailymotion';
+
+import {
+  SearchPagerAll,
+  SearchChannelPager,
+  ChannelVideoPager,
+  SearchPlaylistPager,
+  ChannelPlaylistPager,
+} from './Pagers';
+
+import {
+  SourceChannelToGrayjayChannel,
+  SourceCollectionToGrayjayPlaylist,
+  SourceCollectionToGrayjayPlaylistDetails,
+  SourceVideoToGrayjayVideo,
+  SourceVideoToPlatformVideoDetailsDef,
+} from './Mappers';
+
+import {
+  IDailymotionPluginSettings,
+  IPlatformSystemPlaylist,
+} from '../types/types';
+import {
+  extractClientCredentials,
+  getTokenFromClientCredentials,
+} from './extraction';
+
+source.setSettings = function (settings) {
+  _settings = settings;
+};
+
+let COUNTRY_NAMES_TO_CODE: string[] = [];
+let VIDEOS_PER_PAGE_OPTIONS: number[] = [];
+let PLAYLISTS_PER_PAGE_OPTIONS: number[] = [];
+let CREATOR_AVATAR_HEIGHT: string[] = [];
+let THUMBNAIL_HEIGHT: string[] = [];
+
+//Source Methods
+source.enable = function (conf, settings, saveStateStr) {
+  config = conf ?? {};
+
+  COUNTRY_NAMES_TO_CODE =
+    config?.settings?.find((s) => s.variable == 'preferredCountryOptionIndex')
+      ?.options ?? [];
+
+  VIDEOS_PER_PAGE_OPTIONS =
+    config?.settings
+      ?.find((s) => s.variable == 'videosPerPageOptionIndex')
+      ?.options?.map((s) => parseInt(s)) ?? [];
+
+  PLAYLISTS_PER_PAGE_OPTIONS =
+    config?.settings
+      ?.find((s) => s.variable == 'playlistsPerPageOptionIndex')
+      ?.options?.map((s) => parseInt(s)) ?? [];
+
+  CREATOR_AVATAR_HEIGHT =
+    config?.settings
+      ?.find((s) => s.variable == 'avatarSizeOptionIndex')
+      ?.options?.map((s) => `SQUARE_${s.replace('px', '')}`) ?? [];
+
+  THUMBNAIL_HEIGHT =
+    config?.settings
+      ?.find((s) => s.variable == 'thumbnailResolutionOptionIndex')
+      ?.options?.map((s) => `PORTRAIT_${s.replace('px', '')}`) ?? [];
+
+  const DEFAULT_SETTINGS = {
+    hideSensitiveContent: true,
+    avatarSizeOptionIndex: 8, // 720px
+    thumbnailResolutionOptionIndex: 7, // 1080px
+    preferredCountryOptionIndex: 0, // empty
+    videosPerPageOptionIndex: 3, // 20
+    playlistsPerPageOptionIndex: 0, // 5
+  };
+
+  _settings = { ...DEFAULT_SETTINGS, ...settings };
+
+  if (IS_TESTING) {
+    config.id = '9c87e8db-e75d-48f4-afe5-2d203d4b95c5';
+  }
+
+  let didSaveState = false;
+
+  try {
+    if (saveStateStr) {
+      const saveState = JSON.parse(saveStateStr);
+      if (saveState) {
+
+        Object
+          .keys(state)
+          .forEach((key) => {
+            state[key] = saveState[key];
+          });
+
+        if (!isTokenValid()) {
+          log('Token expired. Fetching a new one.');
+        } else {
+          didSaveState = true;
+          log('Using save state');
+        }
+      }
+    }
+  } catch (ex) {
+    log('Failed to parse saveState:' + ex);
+    didSaveState = false;
+  }
+
+  if (!didSaveState) {
+    if(IS_TESTING){
+      log('Getting a new tokens');
+    }
+
+    let detailsRequestHtml;
+    
+    try {
+
+      detailsRequestHtml = http.GET(BASE_URL, applyCommonHeaders(), false);
+      
+      if (!detailsRequestHtml.isOk) {
+        if (detailsRequestHtml.code >= 500 && detailsRequestHtml.code < 600) {
+          state.maintenanceMode = true;
+          notifyMaintenanceMode();
+        } else {
+          throw new ScriptException('Failed to fetch page to extract auth details');
+        }
+        return;
+      }
+    } catch(e) {
+      state.maintenanceMode = true;
+      notifyMaintenanceMode();
+      return;
+    }
+
+    state.maintenanceMode = false;
+
+    const clientCredentials = extractClientCredentials(detailsRequestHtml);
+
+    const {
+      anonymousUserAuthorizationToken,
+      anonymousUserAuthorizationTokenExpirationDate,
+      isValid,
+    } = getTokenFromClientCredentials(http, clientCredentials);
+
+    if (!isValid) {
+      console.error('Failed to get token');
+      throw new ScriptException('Failed to get authentication token');
+    }
+
+    state.channelsCache = {};
+
+    state.anonymousUserAuthorizationToken =
+      anonymousUserAuthorizationToken ?? '';
+    state.anonymousUserAuthorizationTokenExpirationDate =
+      anonymousUserAuthorizationTokenExpirationDate ?? 0;
+
+    if (config.allowAllHttpHeaderAccess) {
+      // get token for message service api-2-0.spot.im
+      try {
+        const authenticateIm = http.POST(
+          BASE_URL_COMMENTS_AUTH,
+          '',
+          applyCommonHeaders({
+            'x-spot-id': FALLBACK_SPOT_ID,//
+            'x-post-id': 'no$post',
+          }),
+          false,
+        );
+
+        if (!authenticateIm.isOk) {
+          log('Failed to authenticate to comments service');
+        }
+
+        state.commentWebServiceToken = authenticateIm?.headers?.['x-access-token']?.[0];
+      } catch (error) {
+        log('Failed to authenticate to comments service:' + error);
+      }
+    }
+  }
+};
+
+source.getHome = function () {
+
+  if (state.maintenanceMode) {
+    return new ContentPager([]);
+  }
+
+  return getHomePager({}, 0);
+};
+
+source.searchSuggestions = function (query): string[] {
+  try {
+    const gqlResponse = executeGqlQuery(http, {
+      operationName: 'AUTOCOMPLETE_QUERY',
+      variables: {
+        query,
+      },
+      query: AUTOCOMPLETE_QUERY,
+    });
+
+    return (
+      (
+        gqlResponse?.data?.search?.suggestedVideos as SuggestionConnection
+      )?.edges?.map((edge) => edge?.node?.name ?? '') ?? []
+    );
+  } catch (error: any) {
+    log('Failed to get search suggestions:' + error?.message);
+    return [];
+  }
+};
+
+source.getSearchCapabilities = (): ResultCapabilities => SEARCH_CAPABILITIES;
+
+source.search = function (query: string, type: string, order: string, filters) {
+  return getSearchPagerAll({ q: query, page: 1, type, order, filters });
+};
+
+source.searchChannels = function (query) {
+  return getSearchChannelPager({ q: query, page: 1 });
+};
+
+//Channel
+source.isChannelUrl = function (url) {
+  return REGEX_VIDEO_CHANNEL_URL.test(url);
+};
+
+source.getChannel = function (url) {
+
+  if(!state?.channelsCache){
+    state.channelsCache = {};
+  }
+
+  if(state.channelsCache[url]){
+    return state.channelsCache[url];
+  }
+
+  const channel_name = getChannelNameFromUrl(url);
+
+  const channelDetails = executeGqlQuery(http, {
+    operationName: 'CHANNEL_QUERY_DESKTOP',
+    variables: {
+      channel_name,
+      avatar_size: CREATOR_AVATAR_HEIGHT[_settings?.avatarSizeOptionIndex],
+    },
+    query: CHANNEL_QUERY_DESKTOP,
+  });
+
+  state.channelsCache[url] = SourceChannelToGrayjayChannel(
+    config.id,
+    channelDetails.data.channel as Channel,
+  );
+
+  return state.channelsCache[url];
+};
+
+source.getChannelContents = function (url, type, order, filters) {
+
+  if (state.maintenanceMode) {
+    return new ContentPager([]);
+  }
+
+  const page = 1;
+  return getChannelContentsPager(url, page, type, order, filters);
+};
+
+source.getChannelPlaylists = (url): SearchPlaylistPager => {
+  try {
+    return getChannelPlaylists(url, 1);
+  } catch (error) {
+    log('Failed to get channel playlists:' + error);
+    return new ChannelPlaylistPager([]);
+  }
+};
+
+source.getChannelCapabilities = (): ResultCapabilities => {
+  return {
+    types: [Type.Feed.Mixed],
+    sorts: [Type.Order.Chronological, 'Popular'],
+    filters: [],
+  };
+};
+
+//Video
+source.isContentDetailsUrl = function (url) {
+  return [REGEX_VIDEO_URL, REGEX_VIDEO_URL_1, REGEX_VIDEO_URL_EMBED].some((r) =>
+    r.test(url),
+  );
+};
+
+source.getContentDetails = function (url) {
+  return getSavedVideo(url, false);
+};
+
+source.saveState = () => {
+  return JSON.stringify(state);
+};
+
+source.getSubComments = (comment) => {
+  const params = {
+    count: 5,
+    offset: 0,
+    parent_id: comment.context.id,
+    sort_by: 'best',
+    child_count: comment.replyCount,
+  };
+  return getCommentPager(comment.contextUrl, params, 0);
+};
+
+source.getComments = (url) => {
+  if (!config.allowAllHttpHeaderAccess) {
+    return new PlatformCommentPager([], false, url, {}, 0);
+  }
+
+  const params = {
+    sort_by: 'best',
+    offset: 0,
+    count: 10,
+    message_id: null,
+    depth: 2,
+    child_count: 2,
+  };
+  return getCommentPager(url, params, 0);
+};
+
+function getCommentPager(url, params, page) {
+  try {
+    const xid = url.split('/').pop();
+
+    const commentsHeaders = applyCommonHeaders({
+      'x-access-token': state.commentWebServiceToken,
+      'x-spot-id': FALLBACK_SPOT_ID,
+      'x-post-id': xid,
+    });
+
+    const commentRequest = http.POST(
+      BASE_URL_COMMENTS,
+      JSON.stringify(params),
+      commentsHeaders,
+      false,
+    );
+
+    if (!commentRequest.isOk) {
+      throw new UnavailableException(
+        'Failed to authenticate to comments service',
+      );
+    }
+
+    const comments = JSON.parse(commentRequest.body);
+
+    const users = comments.conversation.users;
+
+    const results = comments.conversation.comments.map((v) => {
+      const user = users[v.user_id];
+
+      return new Comment({
+        contextUrl: url,
+        author: new PlatformAuthorLink(
+          new PlatformID(PLATFORM, user.id ?? '', config.id),
+          user.display_name ?? '',
+          '',
+          `${BASE_URL_COMMENTS_THUMBNAILS}/${user.image_id}`,
+        ),
+        message: v.content[0].text,
+        rating: new RatingLikes(v.stars),
+        date: v.written_at,
+        replyCount: v.total_replies_count ?? 0,
+        context: { id: v.id },
+      });
+    });
+
+    return new PlatformCommentPager(
+      results,
+      comments.conversation.has_next,
+      url,
+      params,
+      ++page,
+    );
+  } catch (error) {
+    bridge.log('Failed to get comments:' + error);
+    return new PlatformCommentPager([], false, url, params, 0);
+  }
+}
+
+class PlatformCommentPager extends CommentPager {
+  constructor(results, hasMore, path, params, page) {
+    super(results, hasMore, { path, params, page });
+  }
+
+  nextPage() {
+    return getCommentPager(
+      this.context.path,
+      this.context.params,
+      (this.context.page ?? 0) + 1,
+    );
+  }
+}
+
+//Playlist
+source.isPlaylistUrl = (url): boolean => {
+  return (
+    REGEX_VIDEO_PLAYLIST_URL.test(url) || [
+      LIKED_VIDEOS_PLAYLIST_ID,
+      FAVORITE_VIDEOS_PLAYLIST_ID,
+      RECENTLY_WATCHED_VIDEOS_PLAYLIST_ID
+    ].includes(url)
+  );
+};
+
+source.searchPlaylists = (query, type, order, filters) => {
+  return searchPlaylists({ q: query, type, order, filters });
+};
+
+source.getPlaylist = (url: string): PlatformPlaylistDetails => {
+
+  const thumbnailResolutionIndex = _settings.thumbnailResolutionOptionIndex;
+
+  if (url === LIKED_VIDEOS_PLAYLIST_ID) {
+    return getLikePlaylist(
+      config.id,
+      http,
+      true, //usePlatformAuth,
+      thumbnailResolutionIndex,
+    );
+  }
+
+  if (url === FAVORITE_VIDEOS_PLAYLIST_ID) {
+    return getFavoritesPlaylist(
+      config.id,
+      http,
+      true, //usePlatformAuth,
+      thumbnailResolutionIndex,
+    );
+  }
+
+  if (url === RECENTLY_WATCHED_VIDEOS_PLAYLIST_ID) {
+    return getRecentlyWatchedPlaylist(
+      config.id,
+      http,
+      true, //usePlatformAuth,
+      thumbnailResolutionIndex,
+    );
+  }
+
+  const isPrivatePlaylist = url.includes(PRIVATE_PLAYLIST_QUERY_PARAM_FLAGGER);
+
+  if(isPrivatePlaylist){
+    url = url.replace(PRIVATE_PLAYLIST_QUERY_PARAM_FLAGGER, '');  //remove the private flag
+  }
+
+  const xid = url.split('/').pop();
+
+  const variables = {
+    xid,
+    avatar_size: CREATOR_AVATAR_HEIGHT[_settings.avatarSizeOptionIndex],
+    thumbnail_resolution: THUMBNAIL_HEIGHT[thumbnailResolutionIndex],
+  };
+
+  const gqlResponse = executeGqlQuery(http, {
+    operationName: 'PLAYLIST_VIDEO_QUERY',
+    variables,
+    query: PLAYLIST_DETAILS_QUERY,
+    usePlatformAuth: isPrivatePlaylist,
+  });
+
+  const videos: PlatformVideo[] =
+    gqlResponse?.data?.collection?.videos?.edges.map((edge) => {
+      return SourceVideoToGrayjayVideo(config.id, edge.node as Video);
+    });
+
+  return SourceCollectionToGrayjayPlaylistDetails(
+    config.id,
+    gqlResponse?.data?.collection as Collection,
+    videos,
+  );
+};
+
+source.getUserSubscriptions = (): string[] => {
+  if (!bridge.isLoggedIn()) {
+    log('Failed to retrieve subscriptions page because not logged in.');
+    throw new ScriptException('Not logged in');
+  }
+
+  const usePlatformAuth = true;
+
+  const fetchSubscriptions = (page, first): string[] => {
+    const gqlResponse = executeGqlQuery(http, {
+      operationName: 'SUBSCRIPTIONS_QUERY',
+      variables: {
+        first: first,
+        page: page,
+      },
+      headers: applyCommonHeaders(),
+      query: GET_USER_SUBSCRIPTIONS,
+      usePlatformAuth,
+    });
+
+    return (
+      (gqlResponse?.data?.me?.channel as Channel)?.followings?.edges?.map(
+        (edge) => edge?.node?.creator?.name ?? '',
+      ) ?? []
+    );
+  };
+
+  const first = 100; // Number of records to fetch per page
+  let page = 1;
+  const subscriptions: string[] = [];
+
+  // There is a totalCount ($.data.me.channel.followings.totalCount) property but it's not reliable.
+  // For example, it may return 0 even if there are subscriptions, or it may return a number that is not the actual number of subscriptions.
+  // For now, it's better to fetch until no more results are returned
+
+  let items: string[] = [];
+
+  do {
+    const response = fetchSubscriptions(page, first);
+
+    items = response.map((creatorName) => `${BASE_URL}/${creatorName}`);
+
+    subscriptions.push(...items);
+    page++;
+  } while (items.length);
+
+  return subscriptions;
+};
+
+source.getUserPlaylists = (): string[] => {
+  if (!bridge.isLoggedIn()) {
+    log('Failed to retrieve subscriptions page because not logged in.');
+    throw new ScriptException('Not logged in');
+  }
+
+  const headers = applyCommonHeaders();
+
+  const gqlResponse = executeGqlQuery(http, {
+    operationName: 'SUBSCRIPTIONS_QUERY',
+    headers,
+    query: SUBSCRIPTIONS_QUERY,
+    usePlatformAuth: true,
+  });
+
+  const userName = (gqlResponse?.data?.me?.channel as Channel)?.name;
+
+  const playlists = getPlaylistsByUsername(userName, headers, true);
+
+  // Used to trick migration "Import Playlists" to import "Favorites", "Recently Watched" and "Liked Videos"
+  [
+    LIKED_VIDEOS_PLAYLIST_ID,
+    FAVORITE_VIDEOS_PLAYLIST_ID,
+    RECENTLY_WATCHED_VIDEOS_PLAYLIST_ID,
+  ]
+    .forEach((playlistId) => {
+      if (!playlists.includes(playlistId)) {
+        playlists.push(playlistId);
+      }
+    });
+
+  return playlists;
+};
+
+source.getChannelTemplateByClaimMap = () => {
+  return {
+    //Dailymotion claim type
+    27: {
+      0: BASE_URL + '/{{CLAIMVALUE}}',
+    },
+  };
+};
+
+source.getContentRecommendations = (url, initialData) => {
+
+  try {
+    const videoXid = url.split('/').pop();
+
+    const gqlResponse = executeGqlQuery(http, {
+      operationName: 'DISCOVERY_QUEUE_QUERY',
+      variables: {
+        videoXid,
+        videoCountPerSection: 25
+      },
+      query: DISCOVERY_QUEUE_QUERY,
+      usePlatformAuth: false,
+    });
+
+    const videoXids: string[] = gqlResponse?.data?.views?.neon?.sections?.edges?.[0]?.node?.components?.edges?.map(e => e.node.xid) ?? [];
+
+    const gqlResponse1 = executeGqlQuery(http, {
+      operationName: 'playerVideosDataQuery',
+      variables: {
+        first: 30,
+        avatar_size: CREATOR_AVATAR_HEIGHT[_settings.avatarSizeOptionIndex],
+        thumbnail_resolution: THUMBNAIL_HEIGHT[_settings.thumbnailResolutionOptionIndex],
+        videoXids
+      },
+      query: playerVideosDataQuery,
+      usePlatformAuth: false,
+    });
+
+
+    const results =
+      gqlResponse1.data.videos.edges
+        ?.map((edge) => {
+          return SourceVideoToGrayjayVideo(config.id, edge.node as Video);
+        });
+
+    return new VideoPager(results, false);
+  } catch(error){
+    log('Failed to get recommendations:' + error);
+    return new VideoPager([], false);
+  }
+
+}
+
+function getPlaylistsByUsername(
+  userName,
+  headers,
+  usePlatformAuth = false,
+): string[] {
+  const collections = executeGqlQuery(http, {
+    operationName: 'CHANNEL_PLAYLISTS_QUERY',
+    variables: {
+      channel_name: userName,
+      sort: 'recent',
+      page: 1,
+      first: 99,
+      avatar_size: CREATOR_AVATAR_HEIGHT[_settings.avatarSizeOptionIndex],
+      thumbnail_resolution:
+        THUMBNAIL_HEIGHT[_settings.thumbnailResolutionOptionIndex],
+    },
+    headers,
+    query: GET_CHANNEL_PLAYLISTS_XID,
+    usePlatformAuth,
+  });
+
+  const playlists: string[] = (collections.data.channel as Maybe<Channel>)?.collections?.edges?.map(
+    (edge) => {
+
+      let playlistUrl = `${BASE_URL_PLAYLIST}/${edge?.node?.xid}`;
+
+      const isPrivatePlaylist = edge?.node?.isPrivate ?? false;
+
+      if(isPrivatePlaylist){
+        playlistUrl += PRIVATE_PLAYLIST_QUERY_PARAM_FLAGGER;
+      }
+
+      return playlistUrl;
+    },
+  ) || [];
+
+  return playlists;
+}
+
+function searchPlaylists(contextQuery) {
+  const context = getQuery(contextQuery);
+
+  const variables = {
+    query: context.q,
+    sortByVideos: context.sort,
+    durationMaxVideos: context.filters?.durationMaxVideos,
+    durationMinVideos: context.filters?.durationMinVideos,
+    createdAfterVideos: context.filters?.createdAfterVideos, //Represents a DateTime value as specified by iso8601
+    shouldIncludePlaylists: true,
+    shouldIncludeVideos: false,
+    shouldIncludeLives: false,
+    page: context.page,
+    limit: VIDEOS_PER_PAGE_OPTIONS[_settings.videosPerPageOptionIndex],
+    thumbnail_resolution:
+      THUMBNAIL_HEIGHT[_settings?.thumbnailResolutionOptionIndex],
+    avatar_size: CREATOR_AVATAR_HEIGHT[_settings?.avatarSizeOptionIndex],
+  };
+
+  const gqlResponse = executeGqlQuery(http, {
+    operationName: 'SEARCH_QUERY',
+    variables: variables,
+    query: SEARCH_QUERY,
+    headers: undefined,
+  });
+
+  const playlistConnection = gqlResponse?.data?.search
+    ?.playlists as CollectionConnection;
+
+  const searchResults = playlistConnection?.edges?.map((edge) => {
+    return SourceCollectionToGrayjayPlaylist(config.id, edge?.node);
+  });
+
+  const hasMore = playlistConnection?.pageInfo?.hasNextPage;
+
+  if (!searchResults || searchResults.length === 0) {
+    return new PlaylistPager([]);
+  }
+
+  const params = {
+    query: context.q,
+    sort: context.sort,
+    filters: context.filters,
+  };
+
+  return new SearchPlaylistPager(
+    searchResults,
+    hasMore,
+    params,
+    context.page,
+    searchPlaylists,
+  );
+}
+
+//Internals
+
+function getHomePager(params, page) {
+  const count = VIDEOS_PER_PAGE_OPTIONS[_settings.videosPerPageOptionIndex];
+
+  if (!params) {
+    params = {};
+  }
+
+  params = { ...params, count };
+
+  const headersToAdd = applyCommonHeaders({
+    'X-DM-Preferred-Country': getPreferredCountry(_settings?.preferredCountryOptionIndex),
+  });
+
+  let obj;
+
+  try {
+    obj = executeGqlQuery(http, {
+      operationName: 'SEACH_DISCOVERY_QUERY',
+      variables: {
+        avatar_size: CREATOR_AVATAR_HEIGHT[_settings?.avatarSizeOptionIndex],
+        thumbnail_resolution:
+          THUMBNAIL_HEIGHT[_settings?.thumbnailResolutionOptionIndex],
+      },
+      query: SEACH_DISCOVERY_QUERY,
+      headers: headersToAdd,
+    });
+  } catch (error) {
+    return new VideoPager([], false, { params });
+  }
+
+  const results =
+    obj?.data?.home?.neon?.sections?.edges?.[0]?.node?.components?.edges
+      ?.filter((edge) => edge?.node?.id)
+      ?.map((edge) => {
+        return SourceVideoToGrayjayVideo(config.id, edge.node as Video);
+      });
+
+  const hasMore =
+    obj?.data?.home?.neon?.sections?.edges?.[0]?.node?.components?.pageInfo
+      ?.hasNextPage ?? false;
+
+  return new SearchPagerAll(results, hasMore, params, page, getHomePager);
+}
+
+function getChannelContentsPager(url, page, type, order, filters) {
+  const channel_name = getChannelNameFromUrl(url);
+
+  const shouldLoadVideos =
+    type === Type.Feed.Mixed || type === Type.Feed.Videos;
+
+  const shouldLoadLives =
+    type === Type.Feed.Mixed ||
+    type === Type.Feed.Streams ||
+    type === Type.Feed.Live;
+
+  if (IS_TESTING) {
+    log(
+      `Getting channel contents for ${url}, page: ${page}, type: ${type}, order: ${order}, shouldLoadVideos: ${shouldLoadVideos}, shouldLoadLives: ${shouldLoadLives}, filters: ${JSON.stringify(filters)}`,
+    );
+  }
+
+  /** 
+    Recent = Sort liked medias by most recent.
+    Visited - Sort liked medias by most viewed
+  */
+  let sort: string;
+
+  if (order == Type.Order.Chronological) {
+    sort = LikedMediaSort.Recent;
+  } else if (order == 'Popular') {
+    sort = LikedMediaSort.Visited;
+  } else {
+    sort = LikedMediaSort.Recent;
+  }
+
+  const gqlResponse = executeGqlQuery(http, {
+    operationName: 'CHANNEL_VIDEOS_QUERY',
+    variables: {
+      channel_name,
+      sort,
+      page: page ?? 1,
+      allowExplicit: !_settings.hideSensitiveContent,
+      first: VIDEOS_PER_PAGE_OPTIONS[_settings.videosPerPageOptionIndex],
+      avatar_size: CREATOR_AVATAR_HEIGHT[_settings?.avatarSizeOptionIndex],
+      thumbnail_resolution:
+        THUMBNAIL_HEIGHT[_settings?.thumbnailResolutionOptionIndex],
+      shouldLoadLives,
+      shouldLoadVideos,
+    },
+    query: CHANNEL_VIDEOS_QUERY,
+  });
+
+  const channel = gqlResponse?.data?.channel as Channel;
+
+  const all: (Live | Video)[] = [
+    ...(channel?.lives?.edges
+      ?.filter((e) => e?.node?.isOnAir)
+      ?.map((e) => e?.node as Live) ?? []),
+    ...(channel?.videos?.edges?.map((e) => e?.node as Video) ?? []),
+  ];
+
+  const videos = all.map((node) => SourceVideoToGrayjayVideo(config.id, node));
+
+  const videosHasNext = channel?.videos?.pageInfo?.hasNextPage;
+  const livesHasNext = channel?.lives?.pageInfo?.hasNextPage;
+  const hasNext = videosHasNext || livesHasNext || false;
+
+  const params = {
+    url,
+    type,
+    order,
+    page,
+    filters,
+  };
+
+  return new ChannelVideoPager(
+    videos,
+    hasNext,
+    params,
+    getChannelContentsPager,
+  );
+}
+
+function getSearchPagerAll(contextQuery): VideoPager {
+  const context = getQuery(contextQuery);
+
+  const variables = {
+    query: context.q,
+    sortByVideos: context.sort,
+    durationMaxVideos: context.filters?.durationMaxVideos,
+    durationMinVideos: context.filters?.durationMinVideos,
+    createdAfterVideos: context.filters?.createdAfterVideos, //Represents a DateTime value as specified by iso8601
+    shouldIncludePlaylists: false,
+    shouldIncludeVideos: true,
+    shouldIncludeLives: true,
+    page: context.page ?? 1,
+    limit: VIDEOS_PER_PAGE_OPTIONS[_settings.videosPerPageOptionIndex],
+    avatar_size: CREATOR_AVATAR_HEIGHT[_settings?.avatarSizeOptionIndex],
+    thumbnail_resolution:
+      THUMBNAIL_HEIGHT[_settings?.thumbnailResolutionOptionIndex],
+  };
+
+  const gqlResponse = executeGqlQuery(http, {
+    operationName: 'SEARCH_QUERY',
+    variables: variables,
+    query: SEARCH_QUERY,
+    headers: undefined,
+  });
+
+  const videoConnection = gqlResponse?.data?.search?.videos as VideoConnection;
+  const liveConnection = gqlResponse?.data?.search?.lives as LiveConnection;
+
+  const all: (VideoEdge | LiveEdge | null)[] = [
+    ...(videoConnection?.edges ?? []),
+    ...(liveConnection?.edges ?? []),
+  ];
+
+  const results: PlatformVideo[] = all.map((edge) =>
+    SourceVideoToGrayjayVideo(config.id, edge?.node),
+  );
+
+  const params = {
+    query: context.q,
+    sort: context.sort,
+    filters: context.filters,
+  };
+
+  return new SearchPagerAll(
+    results,
+    videoConnection?.pageInfo?.hasNextPage,
+    params,
+    context.page,
+    getSearchPagerAll,
+  );
+}
+
+function getSavedVideo(url, usePlatformAuth = false) {
+  const id = url.split('/').pop();
+
+  const player_metadata_url = `${BASE_URL_METADATA}/${id}?embedder=https%3A%2F%2Fwww.dailymotion.com%2Fvideo%2Fx8yb2e8&geo=1&player-id=xjnde&locale=en-GB&dmV1st=ce2035cd-bdca-4d7b-baa4-127a17490ca5&dmTs=747022&is_native_app=0&app=com.dailymotion.neon&client_type=webapp&section_type=player&component_style=_`;
+
+  const headers1 = applyCommonHeaders();
+
+  if (_settings.hideSensitiveContent) {
+    headers1['Cookie'] = 'ff=on';
+  } else {
+    headers1['Cookie'] = 'ff=off';
+  }
+
+  const videoDetailsRequestBody = JSON.stringify({
+    operationName: 'WATCHING_VIDEO',
+    variables: {
+      xid: id,
+      avatar_size: CREATOR_AVATAR_HEIGHT[_settings?.avatarSizeOptionIndex],
+      thumbnail_resolution:
+        THUMBNAIL_HEIGHT[_settings?.thumbnailResolutionOptionIndex],
+    },
+    query: WATCHING_VIDEO,
+  });
+
+  const videoDetailsRequestHeaders: Record<string, string> = applyCommonHeaders();
+
+  if (!usePlatformAuth) {
+    videoDetailsRequestHeaders.Authorization = state.anonymousUserAuthorizationToken;
+  }
+
+  const [player_metadataResponse, video_details_response] = http
+    .batch()
+    .GET(player_metadata_url, headers1, usePlatformAuth)
+    .POST(
+      BASE_URL_API,
+      videoDetailsRequestBody,
+      videoDetailsRequestHeaders,
+      usePlatformAuth,
+    )
+    .execute();
+
+
+  if (!player_metadataResponse.isOk) {
+    throw new UnavailableException('Unable to get player metadata');
+  }
+
+  const player_metadata = JSON.parse(player_metadataResponse.body);
+
+  if (player_metadata.error) {
+    if (
+      player_metadata.error.code &&
+      ERROR_TYPES[player_metadata.error.code] !== undefined
+    ) {
+      throw new UnavailableException(ERROR_TYPES[player_metadata.error.code]);
+    }
+
+    throw new UnavailableException('This content is not available');
+  }
+
+  if (video_details_response.code != 200) {
+    throw new UnavailableException('Failed to get video details');
+  }
+
+  const video_details = JSON.parse(video_details_response.body);
+
+  const video = video_details?.data?.video as Video;
+
+  const platformVideoDetails: PlatformVideoDetailsDef =
+    SourceVideoToPlatformVideoDetailsDef(config.id, video, player_metadata);
+
+  const videoDetails = new PlatformVideoDetails(platformVideoDetails);
+
+  videoDetails.getContentRecommendations = function () {
+    return source.getContentRecommendations(url, videoDetails);
+  };
+
+  return videoDetails;
+}
+
+function getSearchChannelPager(context) {
+  const searchResponse = executeGqlQuery(http, {
+    operationName: 'SEARCH_QUERY',
+    variables: {
+      query: context.q,
+      page: context.page ?? 1,
+      limit: VIDEOS_PER_PAGE_OPTIONS[_settings.videosPerPageOptionIndex],
+      avatar_size: CREATOR_AVATAR_HEIGHT[_settings?.avatarSizeOptionIndex],
+    },
+    query: SEARCH_CHANNEL,
+  });
+
+  const results = searchResponse?.data?.search?.channels?.edges.map((edge) => {
+    const channel = edge.node as Channel;
+
+    return SourceChannelToGrayjayChannel(config.id, channel);
+  });
+
+  const params = {
+    query: context.q,
+  };
+
+  return new SearchChannelPager(
+    results,
+    searchResponse?.data?.search?.channels?.pageInfo?.hasNextPage,
+    params,
+    context.page,
+    getSearchChannelPager,
+  );
+}
+
+function getChannelPlaylists(
+  url: string,
+  page: number = 1,
+): SearchPlaylistPager {
+
+  const headers = applyCommonHeaders();
+
+  const usePlatformAuth = false;
+  const channel_name = getChannelNameFromUrl(url);
+
+  const gqlResponse = executeGqlQuery(http, {
+    operationName: 'CHANNEL_PLAYLISTS_QUERY',
+    variables: {
+      channel_name,
+      sort: 'recent',
+      page,
+      first: PLAYLISTS_PER_PAGE_OPTIONS[_settings.playlistsPerPageOptionIndex],
+      avatar_size: CREATOR_AVATAR_HEIGHT[_settings.avatarSizeOptionIndex],
+      thumbnail_resolution:
+        THUMBNAIL_HEIGHT[_settings.thumbnailResolutionOptionIndex],
+    },
+    headers,
+    query: CHANNEL_PLAYLISTS_QUERY,
+    usePlatformAuth,
+  });
+
+  const channel = gqlResponse.data.channel as Channel;
+
+  const content: PlatformPlaylist[] = (channel?.collections?.edges ?? [])
+    .filter(
+      (e) => e?.node?.metrics?.engagement?.videos?.edges?.[0]?.node?.total,
+    ) //exclude empty playlists. could be empty doe to geographic restrictions
+    .map((edge) => {
+      return SourceCollectionToGrayjayPlaylist(config.id, edge?.node);
+    });
+
+  if (content?.length === 0) {
+    return new ChannelPlaylistPager([]);
+  }
+
+  const params = {
+    url,
+  };
+
+  const hasMore = channel?.collections?.pageInfo?.hasNextPage ?? false;
+
+  return new ChannelPlaylistPager(
+    content,
+    hasMore,
+    params,
+    page,
+    getChannelPlaylists,
+  );
+}
+
+function isTokenValid() {
+  const currentTime = Date.now();
+  return state.anonymousUserAuthorizationTokenExpirationDate > currentTime;
+}
+
+function executeGqlQuery(httpClient, requestOptions) {
+  const headersToAdd = requestOptions.headers || applyCommonHeaders();
+
+  const gql = JSON.stringify({
+    operationName: requestOptions.operationName,
+    variables: requestOptions.variables,
+    query: requestOptions.query,
+  });
+
+  const usePlatformAuth =
+    requestOptions.usePlatformAuth == undefined
+      ? false
+      : requestOptions.usePlatformAuth;
+
+  const throwOnError =
+    requestOptions.throwOnError == undefined
+      ? true
+      : requestOptions.throwOnError;
+
+  if (!usePlatformAuth) {
+    headersToAdd.Authorization = state.anonymousUserAuthorizationToken;
+  }
+
+  const res = httpClient.POST(BASE_URL_API, gql, headersToAdd, usePlatformAuth);
+
+  if (!res.isOk) {
+    console.error('Failed to execute request', res);
+    if (throwOnError) {
+      throw new ScriptException('Failed to execute request', res);
+    }
+  }
+
+  const body = JSON.parse(res.body);
+
+  // some errors may be returned in the body with a status code 200
+  if (body.errors) {
+    const message = body.errors.map((e) => e.message).join(', ');
+
+    if (throwOnError) {
+      throw new UnavailableException(message);
+    }
+  }
+
+  return body;
+}
+
+function getPages<TI, TO>(
+  httpClient: IHttp,
+  query: string,
+  operationName: string,
+  variables: any,
+  usePlatformAuth: boolean,
+  setRoot: (gqlResponse: any) => TI,
+  hasNextCallback: (page: TI) => boolean,
+  getNextPage: (page: TI, currentPage) => number,
+  map: (page: any) => TO[],
+): TO[] {
+  let all: TO[] = [];
+
+  if (!hasNextCallback) {
+    hasNextCallback = () => false;
+  }
+
+  let hasNext = true;
+  let nextPage = 1;
+
+  do {
+    variables = { ...variables, page: nextPage };
+
+    const gqlResponse = executeGqlQuery(httpClient, {
+      operationName,
+      variables,
+      query,
+      usePlatformAuth,
+    });
+
+    const root = setRoot(gqlResponse);
+
+    nextPage = getNextPage(root, nextPage);
+
+    const items = map(root);
+
+    hasNext = hasNextCallback(root);
+
+    all = all.concat(items);
+  } while (hasNext);
+
+  return all;
+}
+
+function getLikePlaylist(
+  pluginId: string,
+  httpClient: IHttp,
+  usePlatformAuth: boolean = false,
+  thumbnailResolutionIndex: number = 0,
+): PlatformPlaylistDetails {
+  return getPlatformSystemPlaylist({
+    pluginId,
+    httpClient,
+    query: USER_LIKED_VIDEOS_QUERY,
+    operationName: 'USER_LIKED_VIDEOS_QUERY',
+    rootObject: 'likedMedias',
+    playlistName: 'Liked Videos',
+    usePlatformAuth,
+    thumbnailResolutionIndex,
+  });
+}
+
+function getFavoritesPlaylist(
+  pluginId: string,
+  httpClient: IHttp,
+  usePlatformAuth: boolean = false,
+  thumbnailResolutionIndex: number = 0,
+): PlatformPlaylistDetails {
+  return getPlatformSystemPlaylist({
+    pluginId,
+    httpClient,
+    query: USER_WATCH_LATER_VIDEOS_QUERY,
+    operationName: 'USER_WATCH_LATER_VIDEOS_QUERY',
+    rootObject: 'watchLaterMedias',
+    playlistName: 'Favorites',
+    usePlatformAuth,
+    thumbnailResolutionIndex,
+  });
+}
+
+function getRecentlyWatchedPlaylist(
+  pluginId: string,
+  httpClient: IHttp,
+  usePlatformAuth: boolean = false,
+  thumbnailResolutionIndex: number = 0,
+): PlatformPlaylistDetails {
+  return getPlatformSystemPlaylist({
+    pluginId,
+    httpClient,
+    query: USER_WATCHED_VIDEOS_QUERY,
+    operationName: 'USER_WATCHED_VIDEOS_QUERY',
+    rootObject: 'watchedVideos',
+    playlistName: 'Recently Watched',
+    usePlatformAuth,
+    thumbnailResolutionIndex,
+  });
+}
+
+function getPlatformSystemPlaylist(
+  opts: IPlatformSystemPlaylist,
+): PlatformPlaylistDetails {
+  const videos: PlatformVideo[] = getPages<Maybe<User>, PlatformVideo>(
+    opts.httpClient,
+    opts.query,
+    opts.operationName,
+    {
+      page: 1,
+      thumbnail_resolution: THUMBNAIL_HEIGHT[opts.thumbnailResolutionIndex],
+    },
+    opts.usePlatformAuth,
+    (gqlResponse) => gqlResponse?.data?.me, //set root
+    (me) => (me?.[opts.rootObject]?.edges?.length ?? 0) > 0, //hasNextCallback
+    (me, currentPage) => ++currentPage, //getNextPage
+    (me) =>
+      me?.[opts.rootObject]?.edges.map((edge) => {
+        return SourceVideoToGrayjayVideo(opts.pluginId, edge.node as Video);
+      }),
+  );
+
+  const collection = {
+    id: generateUUIDv4(),
+    name: opts.playlistName,
+    creator: {},
+  };
+
+  return SourceCollectionToGrayjayPlaylistDetails(
+    opts.pluginId,
+    collection as Collection,
+    videos,
+  );
+}
+
+function getPreferredCountry(preferredCountryIndex) {
+  const country = COUNTRY_NAMES_TO_CODE[preferredCountryIndex];
+  const parts = country.split('-');
+  const code = parts[0] ?? '';
+  return (code || '').toLowerCase();
+}
+
+log('LOADED');
