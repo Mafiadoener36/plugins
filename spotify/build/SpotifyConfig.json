@@ -1,0 +1,44 @@
+{
+    "name": "Spotify",
+    "description": "Listen to millions of songs on Spotify",
+    "author": "FUTO",
+    "authorUrl": "https://futo.org",
+    "platformUrl": "https://spotify.com",
+    "sourceUrl": "https://plugins.grayjay.app/Spotify/SpotifyConfig.json",
+    "repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/spotify",
+    "scriptUrl": "./SpotifyScript.js",
+    "version": 16,
+    "iconUrl": "./SpotifyIcon.png",
+    "id": "4e365633-6d3f-4267-8941-fdc36631d813",
+    "scriptSignature": "",
+    "scriptPublicKey": "",
+    "packages": [
+        "Http"
+    ],
+    "allowEval": false,
+    "allowUrls": [
+        "open.spotify.com",
+        "spclient.wg.spotify.com",
+        "gue1-spclient.spotify.com",
+        "seektables.scdn.co",
+        "api-partner.spotify.com",
+        "apresolve.spotify.com",
+        "open.spotifycdn.com"
+    ],
+    "authentication": {
+        "loginUrl": "https://accounts.spotify.com/en/login",
+        "cookiesToFind": [
+            "sp_dc"
+        ],
+        "userAgent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36"
+    },
+    "settings": [
+        {
+            "variable": "spotifyActivity",
+            "name": "Provide Spotify Activity",
+            "description": "Tell Spotify what you played.",
+            "type": "Boolean",
+            "default": "true"
+        }
+    ]
+}
