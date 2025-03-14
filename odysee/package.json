@@ -1,0 +1,35 @@
+{
+    "name": "grayjay-odysee-plugin",
+    "version": "1.0.0",
+    "description": "Odysee with type help",
+    "homepage": "https://gitlab.futo.org/videostreaming/plugins/odysee",
+    "type": "module",
+    "repository": {
+        "type": "git",
+        "url": "git+https://gitlab.futo.org/videostreaming/plugins/odysee.git"
+    },
+    "keywords": [
+        "odysee",
+        "grayjay"
+    ],
+    "author": "FUTO",
+    "license": "AGPL-3.0-or-later",
+    "bugs": {
+        "url": "https://gitlab.futo.org/videostreaming/plugins/odysee/issues"
+    },
+    "dependencies": {},
+    "devDependencies": {
+        "@types/node": "^22.13.4",
+        "@eslint/js": "^9.20.0",
+        "@types/eslint__js": "^8.42.3",
+        "eslint": "^9.20.1",
+        "typescript": "^5.7.3",
+        "typescript-eslint": "^8.24.1",
+        "@types/grayjay-source": "gitlab:kaidelorenzo/grayjay-plugin-types#c750f680835bb47bfff90466acaa697920a2a82a"
+    },
+    "scripts": {
+        "build": "tsc",
+        "lint": "npx eslint .",
+        "dev": "node src/utilities/server.js"
+    }
+}

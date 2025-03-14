@@ -1,0 +1,50 @@
+{
+	"name": "Patreon",
+	"description": "Patreon is a subscription platform allowing creators to release membership only content.",
+	"author": "FUTO",
+	"authorUrl": "https://futo.org",
+
+	"platformUrl": "https://patreon.com",
+	"sourceUrl": "https://plugins.grayjay.app/Patreon/PatreonConfig.json",
+	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/patreon",
+	"scriptUrl": "./PatreonScript.js",
+	"version": 18,
+	
+	"iconUrl": "./patreon_logo.png",
+	"id": "aac9e9f0-24b5-11ee-be56-0242ac120002",
+	
+	"scriptSignature": "",
+	"scriptPublicKey": "",
+	"packages": ["Http","DOMParser"],
+	
+	"allowEval": false,
+	"allowUrls": [
+		"www.patreon.com",
+		"patreon.com"
+	],
+	"changelog": {
+		"18": [
+			"support podcast post types;",
+			"fix comments pagination;",
+			"fix channel details description, banner and thumbnail for some creators;"
+			]
+	},
+	"settings": [
+		{
+			"variable": "hideUnpaidContent",
+			"name": "Hide unpaid content",
+			"description": "Hides content you do not have access for due to missing payment",
+			"type": "Boolean",
+			"default": "false"
+		}
+	],
+	
+	"authentication": {
+		"userAgent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.5481.153 Mobile Safari/537.36",
+		"loginUrl": "https://www.patreon.com/login",
+		"cookiesToFind": ["session_id"],
+		"cookiesExclOthers": false
+	},
+
+	"supportedClaimTypes": [12]
+}
