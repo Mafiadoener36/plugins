@@ -1,0 +1,39 @@
+{
+    "name": "grayjay-bilibili-plugin",
+    "version": "1.0.0",
+    "description": "A BiliBili plugin for Grayjay",
+    "homepage": "https://gitlab.futo.org/videostreaming/plugins/bilibili",
+    "type": "module",
+    "repository": {
+        "type": "git",
+        "url": "git+https://gitlab.futo.org/videostreaming/plugins/bilibili.git"
+    },
+    "keywords": [
+        "bilibili",
+        "grayjay"
+    ],
+    "author": "Kai DeLorenzo",
+    "license": "MPL-2.0",
+    "bugs": {
+        "url": "https://gitlab.futo.org/videostreaming/plugins/bilibili/issues"
+    },
+    "dependencies": {},
+    "devDependencies": {
+        "@types/node": "^22.13.4",
+        "@eslint/js": "^9.20.0",
+        "@types/eslint__js": "^8.42.3",
+        "eslint": "^9.20.1",
+        "typescript": "^5.7.3",
+        "typescript-eslint": "^8.24.0",
+        "@kaidelorenzo/grayjay-polyfill": "gitlab:kaidelorenzo/grayjay-polyfill#4a1aa06988cb65f3042d0d971621caa95a331bd2",
+        "@types/grayjay-source": "gitlab:kaidelorenzo/grayjay-plugin-types#0ed76e018837be238ee867739006d96f2936e572"
+    },
+    "scripts": {
+        "test": "node --test",
+        "debug-build": "node src/utilities/build.js \"http://localhost:8080\"",
+        "build": "node src/utilities/build.js",
+        "dev": "node src/utilities/dev.js",
+        "lint": "npx eslint .",
+        "release": "node src/utilities/release.js"
+    }
+}

@@ -1,0 +1,38 @@
+{
+    "name": "BiliBili (CN)",
+    "description": "BiliBili (CN) is the biggest video platform in China\n\nLogin to access higher video quality, subtitles, and premium content",
+    "author": "FUTO",
+    "authorUrl": "https://futo.org",
+    "platformUrl": "https://bilibili.com",
+    "sourceUrl": "https://plugins.grayjay.app/Bilibili/BiliBiliConfig.json",
+    "repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/bilibili",
+    "scriptUrl": "./BiliBiliScript.js",
+    "version": 23,
+    "iconUrl": "./BiliBiliIcon.png",
+    "id": "cf8ea74d-ad9b-489e-a083-539b6aa8648c",
+    "scriptSignature": "",
+    "scriptPublicKey": "",
+    "packages": [
+        "Http",
+        "Utilities"
+    ],
+    "allowEval": false,
+    "allowUrls": [
+        "www.bilibili.com",
+        "api.bilibili.com",
+        "s1.hdslb.com",
+        "live.bilibili.com",
+        "s.search.bilibili.com",
+        "aisubtitle.hdslb.com",
+        "d1--ov-gotcha05.bilivideo.com",
+        "d1--ov-gotcha07.bilivideo.com",
+        ".bilivideo.com",
+        "*.bilivideo.com",
+        "space.bilibili.com"
+    ],
+    "authentication": {
+		"loginUrl": "https://passport.bilibili.com/h5-app/passport/login",
+		"cookiesToFind": ["SESSDATA"],
+		"userAgent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36"
+	}
+}
